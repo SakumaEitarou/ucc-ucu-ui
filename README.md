@@ -17,7 +17,7 @@
 
 ```bash
 sudo pacman -S qt6-base qt6-declarative qt6-tools cmake
-git clone https://github.com/YOUR_USER/ucc-ucu-ui
+git clone https://github.com/SakumaEitarou/ucc-ucu-ui
 cd ucc-ucu-ui
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)

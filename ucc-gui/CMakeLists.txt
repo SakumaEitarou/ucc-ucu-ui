@@ -1,22 +1,8 @@
-
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick QuickControls2 DBus)
-
-qt_add_executable(ucc-gui-ucu
-    main.cpp
-)
-
-qt_add_qml_module(ucc-gui-ucu
-    URI UCC.UCU
-    VERSION 1.0
-    QML_FILES
-        qml/Main.qml
-        qml/pages/Dashboard.qml
-        qml/pages/Presets.qml
-        qml/pages/FanControl.qml
-        qml/pages/Hydro.qml
-        qml/pages/Keyboard.qml
-        qml/pages/LightBar.qml
-)
-
-target_link_libraries(ucc-gui-ucu PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::QuickControls2 Qt6::DBus libucc-dbus)
+cmake_minimum_required(VERSION 3.20)
+project(ucc-ucu VERSION 1.0 LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_AUTOMOC ON)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 DBus)
+add_executable(ucc-gui-ucu main.cpp)
+target_link_libraries(ucc-gui-ucu PRIVATE Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::QuickControls2 Qt6::DBus ucc-dbus)
 install(TARGETS ucc-gui-ucu DESTINATION bin)
