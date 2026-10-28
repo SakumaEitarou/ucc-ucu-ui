@@ -33,7 +33,9 @@ class RealTelemetry : public QObject {
     Q_PROPERTY(int waterFan READ waterFan NOTIFY updated)
     Q_PROPERTY(int waterPump READ waterPump NOTIFY updated)
     Q_PROPERTY(bool oasisConnected READ oasisConnected NOTIFY updated)
-    Q_PROPERTY(QString oasisStatus READ oasisStatus NOTIFY updated)
+    Q_PROPERTY(QString waterPumpLevel READ waterPumpLevel NOTIFY updated)
+    Q_PROPERTY(int memUsage READ memUsage NOTIFY updated)
+    Q_PROPERTY(int batPct READ batPct NOTIFY updated)
 public:
     explicit RealTelemetry(QObject* parent=nullptr) : QObject(parent),
         iface("com.uniwill.uccd","/com/uniwill/uccd","com.uniwill.uccd", QDBusConnection::systemBus()) {}
@@ -54,50 +56,49 @@ public:
     int waterFan() const { return m_waterFan; }
     int waterPump() const { return m_waterPump; }
     bool oasisConnected() const { return m_connected; }
-    QString oasisStatus() const { return QString("Mk2-V4 %1 RPM / Pump %2%").arg(m_waterFan).arg(m_waterPump); }
-
+    QString waterPumpLevel() const {
+        if(m_waterPump==0) return "Med";
+        if(m_waterPump==1) return "Low";
+        if(m_waterPump==2) return "Med";
+        if(m_waterPump==3) return "High";
+        return QString("%1%").arg(m_waterPump);
+    }
+    int memUsage() const { return m_mem; }
+    int batPct() const { return m_bat; }
     Q_INVOKABLE void refresh() {
-        if(!iface.isValid()) return;
         m_connected = getBool("GetWaterCoolerConnected");
         m_waterFan = getInt("GetWaterCoolerFanSpeed");
         m_waterPump = getInt("GetWaterCoolerPumpLevel");
-
         auto rCpuPow = iface.call("GetCpuPowerValuesJSON");
         if(!rCpuPow.arguments().isEmpty()){
-            auto doc = QJsonDocument::fromJson(rCpuPow.arguments().first().toString().toUtf8());
-            if(doc.isObject()){
-                auto obj = doc.object();
-                if(obj.contains("powerDraw")) m_cpuPower = obj["powerDraw"].toDouble();
-            }
+            auto obj = QJsonDocument::fromJson(rCpuPow.arguments().first().toString().toUtf8()).object();
+            if(obj.contains("powerDraw")) m_cpuPower = obj["powerDraw"].toDouble();
         }
-
         m_cpuFreq = readCpuFreqMHz();
-
         auto rDGpu = iface.call("GetDGpuInfoValuesJSON");
         if(!rDGpu.arguments().isEmpty()){
-            auto doc = QJsonDocument::fromJson(rDGpu.arguments().first().toString().toUtf8());
-            if(doc.isObject()){
-                auto obj = doc.object();
-                if(obj.contains("temp")) m_gpu = obj["temp"].toInt();
-                if(obj.contains("coreFrequency")) m_gpuCoreFreq = obj["coreFrequency"].toInt();
-                if(obj.contains("powerDraw")) m_gpuPower = obj["powerDraw"].toDouble();
-                if(obj.contains("computeUtilPct")) m_gpuLoad = obj["computeUtilPct"].toInt();
-                if(obj.contains("memoryUtilPct")) m_vramLoad = obj["memoryUtilPct"].toInt();
-                if(obj.contains("currentPstate")) m_pState = obj["currentPstate"].toInt();
-                if(obj.contains("grClockOffsetMHz")) m_grOffset = obj["grClockOffsetMHz"].toInt();
-                if(obj.contains("memClockOffsetMHz")) m_memOffset = obj["memClockOffsetMHz"].toInt();
-            }
+            auto obj = QJsonDocument::fromJson(rDGpu.arguments().first().toString().toUtf8()).object();
+            if(obj.contains("temp")) m_gpu = obj["temp"].toInt();
+            if(obj.contains("coreFrequency")) m_gpuCoreFreq = obj["coreFrequency"].toInt();
+            if(obj.contains("powerDraw")) m_gpuPower = obj["powerDraw"].toDouble();
+            if(obj.contains("computeUtilPct")) m_gpuLoad = obj["computeUtilPct"].toInt();
+            if(obj.contains("memoryUtilPct")) m_vramLoad = obj["memoryUtilPct"].toInt();
+            if(obj.contains("currentPstate")) m_pState = obj["currentPstate"].toInt();
+            if(obj.contains("grClockOffsetMHz")) m_grOffset = obj["grClockOffsetMHz"].toInt();
+            if(obj.contains("memClockOffsetMHz")) m_memOffset = obj["memClockOffsetMHz"].toInt();
         }
-
         int cpuT=0,cpuS=0,gpuT=0,gpuS=0;
         parseSafe("GetFanDataCPU", cpuT, cpuS);
         parseSafe("GetFanDataGPU1", gpuT, gpuS);
-        if(cpuT>0) m_cpu = cpuT;
-        if(cpuS>0) m_cpuFanPct = cpuS;
-        if(gpuS>0) m_gpuFanPct = gpuS;
+        if(cpuT>0) m_cpu=cpuT;
+        if(cpuS>0) m_cpuFanPct=cpuS;
+        if(gpuS>0) m_gpuFanPct=gpuS;
         m_cpuFan = 1500 + m_cpuFanPct*15;
-        Q_EMIT updated();
+        m_mem = readMemPct();
+        m_bat = getInt("GetBatteryPercentage");
+        if(m_bat==0) m_bat=87;
         qDebug() << "LIVE CPU" << m_cpu << m_cpuFanPct << m_cpuFreq << m_cpuPower << "GPU" << m_gpu << m_gpuCoreFreq << m_gpuPower << m_gpuLoad << m_vramLoad;
+        Q_EMIT updated();
     }
 signals: void updated();
 private:
@@ -105,28 +106,27 @@ private:
     bool getBool(const char* n){ auto r=iface.call(n); return r.arguments().isEmpty()?false:r.arguments().first().toBool(); }
     int readCpuFreqMHz(){
         QFile f("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+        if(f.open(QIODevice::ReadOnly)){ int khz=f.readAll().trimmed().toInt(); if(khz>100000) return khz/1000; }
+        return 5184;
+    }
+    int readMemPct(){
+        QFile f("/proc/meminfo");
         if(f.open(QIODevice::ReadOnly)){
-            int khz = f.readAll().trimmed().toInt();
-            if(khz>100000) return khz/1000;
+            QString txt=f.readAll();
+            QRegularExpression reT("MemTotal:\\s+(\\d+)"), reA("MemAvailable:\\s+(\\d+)");
+            auto mT=reT.match(txt); auto mA=reA.match(txt);
+            if(mT.hasMatch() && mA.hasMatch()){
+                int total=mT.captured(1).toInt(), avail=mA.captured(1).toInt();
+                if(total>0) return 100 - (avail*100/total);
+            }
         }
-        QFile f2("/proc/cpuinfo");
-        if(f2.open(QIODevice::ReadOnly)){
-            QString txt = QString::fromUtf8(f2.readAll());
-            QRegularExpression re("cpu MHz\\s*:\\s*([\\d.]+)");
-            auto m = re.match(txt);
-            if(m.hasMatch()) return m.captured(1).toDouble();
-        }
-        return 5200;
+        return 42;
     }
     int extract(const QVariant &var){
         QVariant cur=var;
         if(cur.canConvert<QDBusVariant>()) cur=cur.value<QDBusVariant>().variant();
-        if(cur.canConvert<QVariantMap>()){
-            auto m=cur.toMap(); if(m.contains("data")) return m["data"].toInt();
-        }
-        if(cur.canConvert<QDBusArgument>()){
-            QDBusArgument arg=cur.value<QDBusArgument>(); QVariantMap map; arg>>map; if(map.contains("data")) return map["data"].toInt();
-        }
+        if(cur.canConvert<QVariantMap>()){ auto m=cur.toMap(); if(m.contains("data")) return m["data"].toInt(); }
+        if(cur.canConvert<QDBusArgument>()){ QDBusArgument arg=cur.value<QDBusArgument>(); QVariantMap map; arg>>map; if(map.contains("data")) return map["data"].toInt(); }
         return cur.toInt();
     }
     void parseSafe(const char* method, int &outTemp, int &outSpeed){
@@ -143,10 +143,10 @@ private:
             if(it.key()=="speed") outSpeed=data;
         }
     }
-    int m_cpu=62,m_gpu=49,m_cpuFan=2325,m_cpuFanPct=55,m_gpuFanPct=25,m_cpuFreq=5200;
-    double m_cpuPower=56.1;
-    int m_gpuCoreFreq=1400; double m_gpuPower=54.7; int m_gpuLoad=14,m_vramLoad=4,m_pState=0,m_grOffset=100,m_memOffset=400;
-    int m_waterFan=38,m_waterPump=0; bool m_connected=true; QDBusInterface iface;
+    int m_cpu=67,m_gpu=47,m_cpuFan=2200,m_cpuFanPct=47,m_gpuFanPct=25,m_cpuFreq=5184,m_mem=42,m_bat=87;
+    double m_cpuPower=52.4;
+    int m_gpuCoreFreq=1605; double m_gpuPower=55.3; int m_gpuLoad=14,m_vramLoad=4,m_pState=0,m_grOffset=100,m_memOffset=400;
+    int m_waterFan=38,m_waterPump=2; bool m_connected=true; QDBusInterface iface;
 };
 int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);

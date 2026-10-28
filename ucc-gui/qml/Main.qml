@@ -1,10 +1,16 @@
 import QtQuick 2.15
+import QtQuick.Window 2.15
 import QtQuick.Layouts 1.15
-Rectangle {
-    id: root; width: 1280; height: 720; color: "#1a1a23"
+
+Window {
+    id: root
+    width: 1280; height: 720; visible: true
+    title: "UCC - XMG Neo A25 UCU Edition"
+    color: "#1a1a23"
     property string currentPage: "Dashboard"
     property color accent: "#6c5cff"
     property color bg: "#1a1a23"
+
     RowLayout { anchors.fill: parent; spacing: 0
         Rectangle { Layout.preferredWidth: 220; Layout.fillHeight: true; color: "#12121a"
             ColumnLayout { anchors.fill: parent; anchors.margins: 12; spacing: 8
