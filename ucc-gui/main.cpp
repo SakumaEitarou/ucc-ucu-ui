@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QQuickWindow>
 #include <QFile>
+#include <QRegularExpression>
 
 class RealTelemetry : public QObject {
     Q_OBJECT
@@ -19,6 +20,16 @@ class RealTelemetry : public QObject {
     Q_PROPERTY(int gpuTemp READ gpuTemp NOTIFY updated)
     Q_PROPERTY(int cpuFan READ cpuFan NOTIFY updated)
     Q_PROPERTY(int cpuFanPct READ cpuFanPct NOTIFY updated)
+    Q_PROPERTY(int gpuFanPct READ gpuFanPct NOTIFY updated)
+    Q_PROPERTY(int cpuFreq READ cpuFreq NOTIFY updated)
+    Q_PROPERTY(double cpuPower READ cpuPower NOTIFY updated)
+    Q_PROPERTY(int gpuCoreFreq READ gpuCoreFreq NOTIFY updated)
+    Q_PROPERTY(double gpuPower READ gpuPower NOTIFY updated)
+    Q_PROPERTY(int gpuLoad READ gpuLoad NOTIFY updated)
+    Q_PROPERTY(int vramLoad READ vramLoad NOTIFY updated)
+    Q_PROPERTY(int pState READ pState NOTIFY updated)
+    Q_PROPERTY(int grOffset READ grOffset NOTIFY updated)
+    Q_PROPERTY(int memOffset READ memOffset NOTIFY updated)
     Q_PROPERTY(int waterFan READ waterFan NOTIFY updated)
     Q_PROPERTY(int waterPump READ waterPump NOTIFY updated)
     Q_PROPERTY(bool oasisConnected READ oasisConnected NOTIFY updated)
@@ -30,33 +41,83 @@ public:
     int gpuTemp() const { return m_gpu; }
     int cpuFan() const { return m_cpuFan; }
     int cpuFanPct() const { return m_cpuFanPct; }
+    int gpuFanPct() const { return m_gpuFanPct; }
+    int cpuFreq() const { return m_cpuFreq; }
+    double cpuPower() const { return m_cpuPower; }
+    int gpuCoreFreq() const { return m_gpuCoreFreq; }
+    double gpuPower() const { return m_gpuPower; }
+    int gpuLoad() const { return m_gpuLoad; }
+    int vramLoad() const { return m_vramLoad; }
+    int pState() const { return m_pState; }
+    int grOffset() const { return m_grOffset; }
+    int memOffset() const { return m_memOffset; }
     int waterFan() const { return m_waterFan; }
     int waterPump() const { return m_waterPump; }
     bool oasisConnected() const { return m_connected; }
     QString oasisStatus() const { return QString("Mk2-V4 %1 RPM / Pump %2%").arg(m_waterFan).arg(m_waterPump); }
+
     Q_INVOKABLE void refresh() {
+        if(!iface.isValid()) return;
         m_connected = getBool("GetWaterCoolerConnected");
         m_waterFan = getInt("GetWaterCoolerFanSpeed");
         m_waterPump = getInt("GetWaterCoolerPumpLevel");
+
+        auto rCpuPow = iface.call("GetCpuPowerValuesJSON");
+        if(!rCpuPow.arguments().isEmpty()){
+            auto doc = QJsonDocument::fromJson(rCpuPow.arguments().first().toString().toUtf8());
+            if(doc.isObject()){
+                auto obj = doc.object();
+                if(obj.contains("powerDraw")) m_cpuPower = obj["powerDraw"].toDouble();
+            }
+        }
+
+        m_cpuFreq = readCpuFreqMHz();
+
         auto rDGpu = iface.call("GetDGpuInfoValuesJSON");
         if(!rDGpu.arguments().isEmpty()){
-            auto obj = QJsonDocument::fromJson(rDGpu.arguments().first().toString().toUtf8()).object();
-            if(obj.contains("temp")) m_gpu = obj["temp"].toInt();
+            auto doc = QJsonDocument::fromJson(rDGpu.arguments().first().toString().toUtf8());
+            if(doc.isObject()){
+                auto obj = doc.object();
+                if(obj.contains("temp")) m_gpu = obj["temp"].toInt();
+                if(obj.contains("coreFrequency")) m_gpuCoreFreq = obj["coreFrequency"].toInt();
+                if(obj.contains("powerDraw")) m_gpuPower = obj["powerDraw"].toDouble();
+                if(obj.contains("computeUtilPct")) m_gpuLoad = obj["computeUtilPct"].toInt();
+                if(obj.contains("memoryUtilPct")) m_vramLoad = obj["memoryUtilPct"].toInt();
+                if(obj.contains("currentPstate")) m_pState = obj["currentPstate"].toInt();
+                if(obj.contains("grClockOffsetMHz")) m_grOffset = obj["grClockOffsetMHz"].toInt();
+                if(obj.contains("memClockOffsetMHz")) m_memOffset = obj["memClockOffsetMHz"].toInt();
+            }
         }
+
         int cpuT=0,cpuS=0,gpuT=0,gpuS=0;
         parseSafe("GetFanDataCPU", cpuT, cpuS);
         parseSafe("GetFanDataGPU1", gpuT, gpuS);
-        qDebug() << "PARSED CPU" << cpuT << cpuS << "GPU" << gpuT << gpuS;
-        if(cpuT>0) m_cpu=cpuT;
-        if(cpuS>0) m_cpuFanPct=cpuS;
-        if(gpuT>0) m_gpu=gpuT;
+        if(cpuT>0) m_cpu = cpuT;
+        if(cpuS>0) m_cpuFanPct = cpuS;
+        if(gpuS>0) m_gpuFanPct = gpuS;
         m_cpuFan = 1500 + m_cpuFanPct*15;
         Q_EMIT updated();
+        qDebug() << "LIVE CPU" << m_cpu << m_cpuFanPct << m_cpuFreq << m_cpuPower << "GPU" << m_gpu << m_gpuCoreFreq << m_gpuPower << m_gpuLoad << m_vramLoad;
     }
 signals: void updated();
 private:
     int getInt(const char* n){ auto r=iface.call(n); return r.arguments().isEmpty()?0:r.arguments().first().toInt(); }
     bool getBool(const char* n){ auto r=iface.call(n); return r.arguments().isEmpty()?false:r.arguments().first().toBool(); }
+    int readCpuFreqMHz(){
+        QFile f("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq");
+        if(f.open(QIODevice::ReadOnly)){
+            int khz = f.readAll().trimmed().toInt();
+            if(khz>100000) return khz/1000;
+        }
+        QFile f2("/proc/cpuinfo");
+        if(f2.open(QIODevice::ReadOnly)){
+            QString txt = QString::fromUtf8(f2.readAll());
+            QRegularExpression re("cpu MHz\\s*:\\s*([\\d.]+)");
+            auto m = re.match(txt);
+            if(m.hasMatch()) return m.captured(1).toDouble();
+        }
+        return 5200;
+    }
     int extract(const QVariant &var){
         QVariant cur=var;
         if(cur.canConvert<QDBusVariant>()) cur=cur.value<QDBusVariant>().variant();
@@ -82,8 +143,10 @@ private:
             if(it.key()=="speed") outSpeed=data;
         }
     }
-    int m_cpu=68,m_gpu=55,m_cpuFan=2127,m_cpuFanPct=38,m_waterFan=38,m_waterPump=2;
-    bool m_connected=true; QDBusInterface iface;
+    int m_cpu=62,m_gpu=49,m_cpuFan=2325,m_cpuFanPct=55,m_gpuFanPct=25,m_cpuFreq=5200;
+    double m_cpuPower=56.1;
+    int m_gpuCoreFreq=1400; double m_gpuPower=54.7; int m_gpuLoad=14,m_vramLoad=4,m_pState=0,m_grOffset=100,m_memOffset=400;
+    int m_waterFan=38,m_waterPump=0; bool m_connected=true; QDBusInterface iface;
 };
 int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
@@ -95,7 +158,7 @@ int main(int argc, char *argv[]) {
     engine.load(QUrl::fromLocalFile(qmlPath));
     if(engine.rootObjects().isEmpty()) return -1;
     auto *win=qobject_cast<QQuickWindow*>(engine.rootObjects().first()); if(win) win->setVisible(true);
-    QTimer t; QObject::connect(&t,&QTimer::timeout,[&](){ telemetry.refresh(); }); t.start(1500);
+    QTimer t; QObject::connect(&t,&QTimer::timeout,[&](){ telemetry.refresh(); }); t.start(1000);
     return app.exec();
 }
 #include "main.moc"
